@@ -6,15 +6,10 @@ services:
     container_name: droid2api
     ports:
       - "3000:3000"
-    environment:
-      # 认证配置（按优先级选择其一）：
-      # 最高优先级：固定API密钥（推荐用于生产环境）
-      - FACTORY_API_KEY=${FACTORY_API_KEY}
-      # 次优先级：refresh token自动刷新机制
-      - DROID_REFRESH_KEY=${DROID_REFRESH_KEY}
-      # 可选：如果需要修改端口，在config.json中配置
     volumes:
-      # 可选：持久化auth.json以保存刷新的tokens
+      # 挂载配置文件（支持热加载，修改后自动生效）
+      - ./config:/app/config
+      # 持久化认证数据
       - ./data:/app/data
     restart: unless-stopped
     healthcheck:

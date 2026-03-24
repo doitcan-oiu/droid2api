@@ -1,6 +1,30 @@
+# 依赖目录
 node_modules/
+
+# 日志文件
 *.log
+
+# 环境变量文件
 .env
+
+# 系统文件
 .DS_Store
+
+# 数据目录（含认证令牌等敏感信息）
+data/
+
+# 旧版配置文件（已迁移至 config/app.yaml）
+config.json
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# 工具本地配置
+.claude/
+.factory/
+
+# 临时文件
 *.txt
+*.tmp
 AGENTS.md

@@ -7,13 +7,17 @@ WORKDIR /app
 # 复制 package.json 和 package-lock.json
 COPY package*.json ./
 
-# 安装项目依赖
+# 安装生产依赖
 RUN npm ci --only=production
 
 # 复制项目文件
-COPY . .
+COPY server.js ./
+COPY src/ ./src/
+COPY config/ ./config/
 
-# 暴露端口（默认3000，可通过环境变量覆盖）
+# data/ 目录由程序按需自动创建（存储 refresh token 运行时状态）
+
+# 暴露端口
 EXPOSE 3000
 
 # 设置环境变量

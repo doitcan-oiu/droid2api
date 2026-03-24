@@ -1,19 +1,26 @@
 {
   "name": "droid2api",
-  "version": "1.3.7",
-  "description": "OpenAI Compatible API Proxy",
+  "version": "2.0.0",
+  "description": "OpenAI 兼容的 API 代理服务 - 统一访问多种 LLM 模型",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
-  "keywords": ["openai", "api", "proxy"],
+  "keywords": [
+    "openai",
+    "anthropic",
+    "llm",
+    "api",
+    "proxy"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "https-proxy-agent": "^7.0.2",
+    "js-yaml": "^4.1.1",
     "node-fetch": "^3.3.2"
   }
 }

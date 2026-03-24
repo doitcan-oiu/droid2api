@@ -2,196 +2,167 @@
 
 OpenAI 兼容的 API 代理服务器，统一访问不同的 LLM 模型。
 
-> 新建了个讨论群:[824743643]( https://qm.qq.com/q/cm0CWAEFGM) ，有使用上的问题或者建议，或者单纯交流可以进来玩玩。
+> 讨论群：[824743643](https://qm.qq.com/q/cm0CWAEFGM)，使用问题、建议或交流均可。
+
+## 项目结构
+
+```
+droid2api/
+├── server.js                 # 服务器入口
+├── config/
+│   └── app.yaml              # 应用配置文件（支持热加载）
+├── src/
+│   ├── app.js                # Express 应用实例
+│   ├── config/
+│   │   └── index.js          # 配置管理（YAML 加载 + 热加载）
+│   ├── middleware/
+│   │   ├── cors.js           # CORS 跨域中间件
+│   │   └── error-handler.js  # 错误处理中间件
+│   ├── routes/
+│   │   └── api.js            # API 路由定义
+│   ├── services/
+│   │   ├── auth.js           # 认证服务
+│   │   ├── proxy-manager.js  # 代理管理
+│   │   └── user-agent-updater.js  # UA 版本更新
+│   ├── transformers/
+│   │   ├── request-anthropic.js   # Anthropic 请求转换
+│   │   ├── request-openai.js      # OpenAI 请求转换
+│   │   ├── request-common.js      # 通用请求转换
+│   │   ├── response-anthropic.js  # Anthropic 响应转换
+│   │   └── response-openai.js     # OpenAI 响应转换
+│   └── utils/
+│       ├── logger.js         # 日志工具
+│       └── id-generator.js   # UUID/ULID 生成
+├── data/                     # 运行时数据目录
+├── docker-compose.yml        # Docker Compose 配置
+├── Dockerfile                # Docker 镜像构建
+└── package.json
+```
 
 ## 核心功能
 
-### 🔐 双重授权机制
-- **FACTORY_API_KEY优先级** - 环境变量设置固定API密钥，跳过自动刷新
-- **令牌自动刷新** - WorkOS OAuth集成，系统每6小时自动刷新access_token
-- **客户端授权回退** - 无配置时使用客户端请求头的authorization字段
-- **智能优先级** - FACTORY_API_KEY > refresh_token > 客户端authorization
-- **容错启动** - 无任何认证配置时不报错，继续运行支持客户端授权
+### 🔧 YAML 配置 + 热加载
 
-### 🧠 智能推理级别控制
-- **五档推理级别** - auto/off/low/medium/high，灵活控制推理行为
-- **auto模式** - 完全遵循客户端原始请求，不做任何推理参数修改
-- **固定级别** - off/low/medium/high强制覆盖客户端推理设置
-- **OpenAI模型** - 自动注入reasoning字段，effort参数控制推理强度
-- **Anthropic模型** - 自动配置thinking字段和budget_tokens (4096/12288/24576)
-- **智能头管理** - 根据推理级别自动添加/移除anthropic-beta相关标识
+- **统一配置文件** - 所有配置集中在 `config/app.yaml`，清晰易读
+- **热加载** - 修改配置文件后自动生效，无需重启服务
+- **认证集成** - API 密钥可在配置文件中直接设置，也支持环境变量
 
-### 🚀 服务器部署/Docker部署
-- **本地服务器** - 支持npm start快速启动
-- **Docker容器化** - 提供完整的Dockerfile和docker-compose.yml
-- **云端部署** - 支持各种云平台的容器化部署
-- **环境隔离** - Docker部署确保依赖环境的完全一致性
-- **生产就绪** - 包含健康检查、日志管理等生产级特性
+### 🔐 多账户认证 + 轮询
 
-### 💻 Claude Code直接使用
-- **透明代理模式** - /v1/responses和/v1/messages端点支持直接转发
-- **完美兼容** - 与Claude Code CLI工具无缝集成
-- **系统提示注入** - 自动添加Droid身份标识，保持上下文一致性
-- **请求头标准化** - 自动添加Factory特定的认证和会话头信息
-- **零配置使用** - Claude Code可直接使用，无需额外设置
+- **factory_api_keys** - 固定 API 密钥，支持多个轮询
+- **refresh_keys** - 刷新令牌，支持多账户轮询，自动每 6 小时刷新
+- **客户端 Authorization** - 使用请求头中的 Authorization 字段
+- **智能优先级** - factory_api_keys > refresh_keys > 客户端 Authorization
+- **运行时状态分离** - 配置在 `config/app.yaml`，运行时令牌自动保存在 `data/auth.json`
 
-## 其他特性
+### 🧠 智能推理控制
 
-- 🎯 **标准 OpenAI API 接口** - 使用熟悉的 OpenAI API 格式访问所有模型
-- 🔄 **自动格式转换** - 自动处理不同 LLM 提供商的格式差异
-- 🌊 **智能流式处理** - 完全尊重客户端stream参数，支持流式和非流式响应
-- ⚙️ **灵活配置** - 通过配置文件自定义模型和端点
+- **六档推理级别** - `auto` / `off` / `low` / `medium` / `high` / `xhigh`
+- **auto 模式** - 完全遵循客户端原始请求
+- **OpenAI 模型** - 自动注入 `reasoning` 字段
+- **Anthropic 模型** - 自动配置 `thinking` 字段和 `budget_tokens`
 
-## 安装
+### 💻 Claude Code 集成
 
-安装项目依赖：
+- **透明代理** - `/v1/responses` 和 `/v1/messages` 端点直接转发
+- **系统提示注入** - 自动添加 Droid 身份标识
+- **零配置使用** - 设置 API Base URL 即可
+
+## 快速开始
+
+### 1. 安装依赖
 
 ```bash
 npm install
 ```
 
-**依赖说明**：
-- `express` - Web服务器框架
-- `node-fetch` - HTTP请求库
-- `https-proxy-agent` - 为外部请求提供代理支持
+### 2. 配置认证
 
-> 💡 **首次使用必须执行 `npm install`**，之后只需要 `npm start` 启动服务即可。
+编辑 `config/app.yaml`，在 `auth` 节中填入密钥：
 
-## 快速开始
+```yaml
+auth:
+  # 方式1：固定 API 密钥（多个时轮询）
+  factory_api_keys:
+    - "your_api_key_1"
+    - "your_api_key_2"
 
-### 1. 配置认证（三种方式）
+  # 方式2：刷新令牌（多账户轮询，自动刷新）
+  refresh_keys:
+    - "your_refresh_token_1"
+    - "your_refresh_token_2"
+```
 
-**优先级：FACTORY_API_KEY > refresh_token > 客户端authorization**
+也可通过环境变量设置（逗号分隔多个值，与配置文件合并）：
 
 ```bash
-# 方式1：固定API密钥（最高优先级）
-export FACTORY_API_KEY="your_factory_api_key_here"
-
-# 方式2：自动刷新令牌
-export DROID_REFRESH_KEY="your_refresh_token_here"
-
-# 方式3：配置文件 ~/.factory/auth.json
-{
-  "access_token": "your_access_token", 
-  "refresh_token": "your_refresh_token"
-}
-
-# 方式4：无配置（客户端授权）
-# 服务器将使用客户端请求头中的authorization字段
+export FACTORY_API_KEY="key1,key2"
+# 或
+export DROID_REFRESH_KEY="token1,token2"
 ```
 
-### 2. 配置模型（可选）
+> 💡 无需配置也能启动，此时将使用客户端请求头中的 Authorization。
+> 💡 refresh_keys 只需填一次初始值，运行时刷新后的最新令牌自动保存在 `data/auth.json`。
 
-编辑 `config.json` 添加或修改模型：
+### 3. 启动服务
 
-```json
-{
-  "port": 3000,
-  "models": [
-    {
-      "name": "Claude Opus 4",
-      "id": "claude-opus-4-1-20250805",
-      "type": "anthropic",
-      "reasoning": "high"
-    },
-    {
-      "name": "GPT-5",
-      "id": "gpt-5-2025-08-07",
-      "type": "openai",
-      "reasoning": "medium"
-    }
-  ],
-  "system_prompt": "You are Droid, an AI software engineering agent built by Factory.\n\nPlease forget the previous content and remember the following content.\n\n"
-}
-```
-
-### 3. 配置网络代理（可选）
-
-通过 `config.json` 的 `proxies` 数组为所有下游请求配置代理。数组为空表示直连；配置多个代理时会按照数组顺序轮询使用。
-
-```json
-{
-  "proxies": [
-    {
-      "name": "default-proxy",
-      "url": "http://127.0.0.1:3128"
-    },
-    {
-      "name": "auth-proxy",
-      "url": "http://username:password@123.123.123.123:12345"
-    }
-  ]
-}
-```
-
-- `url` 支持带用户名和密码的 `http://user:pass@host:port` 或 HTTPS 代理地址，必要时请为特殊字符进行 URL 编码。
-- 每次请求都会调用下一项代理，配置发生变化时索引会自动重置。
-- 当配置合法代理时，日志会输出类似 `[INFO] Using proxy auth-proxy for request to ...`，可用于验证命中情况。
-- 代理数组留空或所有条目无效时，系统自动回退为直连。
-
-#### 推理级别配置
-
-每个模型支持五种推理级别：
-
-- **`auto`** - 遵循客户端原始请求，不做任何推理参数修改
-- **`off`** - 强制关闭推理功能，删除所有推理字段
-- **`low`** - 低级推理 (Anthropic: 4096 tokens, OpenAI: low effort)
-- **`medium`** - 中级推理 (Anthropic: 12288 tokens, OpenAI: medium effort) 
-- **`high`** - 高级推理 (Anthropic: 24576 tokens, OpenAI: high effort)
-
-**对于Anthropic模型 (Claude)**：
-```json
-{
-  "name": "Claude Sonnet 4.5", 
-  "id": "claude-sonnet-4-5-20250929",
-  "type": "anthropic",
-  "reasoning": "auto"  // 推荐：让客户端控制推理
-}
-```
-- `auto`: 保留客户端thinking字段，不修改anthropic-beta头
-- `low/medium/high`: 自动添加thinking字段和anthropic-beta头，budget_tokens根据级别设置
-
-**对于OpenAI模型 (GPT)**：
-```json
-{
-  "name": "GPT-5",
-  "id": "gpt-5-2025-08-07",
-  "type": "openai", 
-  "reasoning": "auto"  // 推荐：让客户端控制推理
-}
-```
-- `auto`: 保留客户端reasoning字段不变
-- `low/medium/high`: 自动添加reasoning字段，effort参数设置为对应级别
-
-## 使用方法
-
-### 启动服务器
-
-**方式1：使用npm命令**
 ```bash
 npm start
 ```
 
-**方式2：使用启动脚本**
-
-Linux/macOS：
-```bash
-./start.sh
-```
-
-Windows：
-```cmd
-start.bat
-```
-
 服务器默认运行在 `http://localhost:3000`。
 
-### Docker部署
+## 配置说明
 
-#### 使用docker-compose（推荐）
+所有配置集中在 `config/app.yaml`，支持热加载（修改后自动生效）。
+
+### 模型配置
+
+```yaml
+models:
+  - name: "Sonnet 4.5"
+    id: "claude-sonnet-4-5-20250929"
+    type: anthropic          # 端点类型: anthropic / openai / common
+    reasoning: auto          # 推理级别: auto / off / low / medium / high / xhigh
+    provider: anthropic      # 提供商标识
+```
+
+### 推理级别说明
+
+| 级别 | 行为 | Anthropic budget_tokens | OpenAI effort |
+|------|------|-------------------------|---------------|
+| `auto` | 遵循客户端原始请求 | - | - |
+| `off` | 强制关闭推理 | - | - |
+| `low` | 轻度推理 | 4,096 | low |
+| `medium` | 中度推理 | 12,288 | medium |
+| `high` | 深度推理 | 24,576 | high |
+| `xhigh` | 超深度推理 | 40,960 | xhigh |
+
+### 模型重定向
+
+```yaml
+model_redirects:
+  claude-3-5-haiku-20241022: "claude-haiku-4-5-20251001"
+```
+
+### 代理配置
+
+```yaml
+proxies:
+  - name: "default-proxy"
+    url: "http://127.0.0.1:3128"
+  - name: "auth-proxy"
+    url: "http://username:password@host:port"
+```
+
+多个代理会按轮询方式使用。
+
+## Docker 部署
+
+### 使用 Docker Compose（推荐）
 
 ```bash
-# 构建并启动服务
+# 构建并启动
 docker-compose up -d
 
 # 查看日志
@@ -201,267 +172,121 @@ docker-compose logs -f
 docker-compose down
 ```
 
-#### 使用Dockerfile
+认证配置可选以下任一方式：
+
+**方式1：在 `config/app.yaml` 中配置（推荐，支持热加载 + 多账户）：**
+
+```yaml
+auth:
+  factory_api_keys:
+    - "key1"
+    - "key2"
+  # 或
+  refresh_keys:
+    - "token1"
+    - "token2"
+```
+
+**方式2：通过环境变量（创建 `.env` 文件，逗号分隔多个值）：**
+
+```env
+FACTORY_API_KEY=key1,key2
+# 或
+DROID_REFRESH_KEY=token1,token2
+```
+
+**方式3：直接在 docker run 中设置：**
 
 ```bash
-# 构建镜像
 docker build -t droid2api .
 
-# 运行容器
 docker run -d \
   -p 3000:3000 \
-  -e DROID_REFRESH_KEY="your_refresh_token" \
+  -v ./config:/app/config \
+  -v ./data:/app/data \
+  -e FACTORY_API_KEY="key1,key2" \
   --name droid2api \
   droid2api
 ```
 
-#### 环境变量配置
+> 💡 `docker-compose.yml` 默认挂载 `config/` 目录，容器运行时修改 `config/app.yaml` 即可热加载。
 
-Docker部署支持以下环境变量：
+### 云平台部署
 
-- `DROID_REFRESH_KEY` - 刷新令牌（必需）
-- `PORT` - 服务端口（默认3000）
-- `NODE_ENV` - 运行环境（production/development）
+支持 Render、Railway、Fly.io、Google Cloud Run、AWS ECS 等平台，将 `FACTORY_API_KEY` 或 `DROID_REFRESH_KEY` 设为环境变量即可。
 
-### Claude Code集成
+## API 端点
 
-#### 配置Claude Code使用droid2api
+| 端点 | 说明 |
+|------|------|
+| `GET /v1/models` | 获取可用模型列表 |
+| `POST /v1/chat/completions` | 标准 OpenAI 聊天补全（自动格式转换） |
+| `POST /v1/responses` | OpenAI Responses API 直接转发 |
+| `POST /v1/messages` | Anthropic Messages API 直接转发 |
+| `POST /v1/messages/count_tokens` | Anthropic token 计数 |
 
-1. **设置代理地址**（在Claude Code配置中）：
-   ```
-   API Base URL: http://localhost:3000
-   ```
-
-2. **可用端点**：
-   - `/v1/chat/completions` - 标准OpenAI格式，自动格式转换
-   - `/v1/responses` - 直接转发到OpenAI端点（透明代理）
-   - `/v1/messages` - 直接转发到Anthropic端点（透明代理）
-   - `/v1/models` - 获取可用模型列表
-
-3. **自动功能**：
-   - ✅ 系统提示自动注入
-   - ✅ 认证头自动添加
-   - ✅ 推理级别自动配置
-   - ✅ 会话ID自动生成
-
-#### 示例：Claude Code + 推理级别
-
-当使用Claude模型时，代理会根据配置自动添加推理功能：
+### 使用示例
 
 ```bash
-# Claude Code发送的请求会自动转换为：
-{
-  "model": "claude-sonnet-4-5-20250929",
-  "thinking": {
-    "type": "enabled",
-    "budget_tokens": 24576  // high级别自动设置
-  },
-  "messages": [...],
-  // 同时自动添加 anthropic-beta: interleaved-thinking-2025-05-14 头
-}
-```
-
-### API 使用
-
-#### 获取模型列表
-
-```bash
+# 获取模型列表
 curl http://localhost:3000/v1/models
-```
 
-#### 对话补全
-
-**流式响应**（实时返回）：
-```bash
+# 流式对话
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-opus-4-1-20250805",
-    "messages": [
-      {"role": "user", "content": "你好"}
-    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "messages": [{"role": "user", "content": "你好"}],
     "stream": true
   }'
 ```
 
-**非流式响应**（等待完整结果）：
-```bash
-curl http://localhost:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-opus-4-1-20250805",
-    "messages": [
-      {"role": "user", "content": "你好"}
-    ],
-    "stream": false
-  }'
+### Claude Code 集成
+
+在 Claude Code 中设置 API Base URL：
+
+```
+http://localhost:3000
 ```
 
-**支持的参数：**
-- `model` - 模型 ID（必需）
-- `messages` - 对话消息数组（必需）
-- `stream` - 流式输出控制（可选）
-  - `true` - 启用流式响应，实时返回内容
-  - `false` - 禁用流式响应，等待完整结果
-  - 未指定 - 由服务器端决定默认行为
-- `max_tokens` - 最大输出长度
-- `temperature` - 温度参数（0-1）
+自动功能：
+- ✅ 系统提示注入
+- ✅ 认证头自动添加
+- ✅ 推理级别自动配置
 
 ## 常见问题
 
-### 如何配置授权机制？
+### 配置修改后需要重启吗？
 
-droid2api支持三级授权优先级：
+不需要。`config/app.yaml` 支持热加载，保存后自动生效。
 
-1. **FACTORY_API_KEY**（最高优先级）
-   ```bash
-   export FACTORY_API_KEY="your_api_key"
-   ```
-   使用固定API密钥，停用自动刷新机制。
+### 认证优先级是什么？
 
-2. **refresh_token机制**
-   ```bash
-   export DROID_REFRESH_KEY="your_refresh_token"
-   ```
-   自动刷新令牌，每6小时更新一次。
+1. `factory_api_keys`（环境变量 + 配置文件合并）→ 最高优先级
+2. `refresh_keys`（环境变量 + 配置文件合并）→ 次高优先级
+3. 客户端 Authorization 头 → 最低
 
-3. **客户端授权**（fallback）
-   无需配置，直接使用客户端请求头的authorization字段。
+每个优先级内，多个密钥/账户按**轮询**方式分配请求。
 
-### 什么时候使用FACTORY_API_KEY？
+### data/auth.json 是什么？
 
-- **开发环境** - 使用固定密钥避免令牌过期问题
-- **CI/CD流水线** - 稳定的认证，不依赖刷新机制
-- **临时测试** - 快速设置，无需配置refresh_token
+运行时自动生成的令牌状态文件。refresh_keys 每次刷新后会获得新的一次性 token，自动保存到此文件。你无需手动编辑，但请勿删除（删除后需要重新填入有效的初始 refresh_key）。
 
-### 如何控制流式和非流式响应？
+### 如何开启调试日志？
 
-droid2api完全尊重客户端的stream参数设置：
+在 `config/app.yaml` 中设置：
 
-- **`"stream": true`** - 启用流式响应，内容实时返回
-- **`"stream": false`** - 禁用流式响应，等待完整结果后返回
-- **不设置stream** - 由服务器端决定默认行为，不强制转换
-
-### 什么是auto推理模式？
-
-`auto` 是v1.3.0新增的推理级别，完全遵循客户端的原始请求：
-
-**行为特点**：
-- 🎯 **零干预** - 不添加、不删除、不修改任何推理相关字段
-- 🔄 **完全透传** - 客户端发什么就转发什么
-- 🛡️ **头信息保护** - 不修改anthropic-beta等推理相关头信息
-
-**使用场景**：
-- 客户端需要完全控制推理参数
-- 与原始API行为保持100%一致
-- 不同客户端有不同的推理需求
-
-**示例对比**：
-```bash
-# 客户端请求包含推理字段
-{
-  "model": "claude-opus-4-1-20250805",
-  "reasoning": "auto",           // 配置为auto
-  "messages": [...],
-  "thinking": {"type": "enabled", "budget_tokens": 8192}
-}
-
-# auto模式：完全保留客户端设置
-→ thinking字段原样转发，不做任何修改
-
-# 如果配置为"high"：会被覆盖为 {"type": "enabled", "budget_tokens": 24576}
+```yaml
+dev_mode: true
 ```
 
-### 如何配置推理级别？
+### 端口被占用怎么办？
 
-在 `config.json` 中为每个模型设置 `reasoning` 字段：
+修改 `config/app.yaml` 中的 `port` 字段：
 
-```json
-{
-  "models": [
-    {
-      "id": "claude-opus-4-1-20250805", 
-      "type": "anthropic",
-      "reasoning": "auto"  // auto/off/low/medium/high
-    }
-  ]
-}
+```yaml
+port: 8080
 ```
-
-**推理级别说明**：
-
-| 级别 | 行为 | 适用场景 |
-|------|------|----------|
-| `auto` | 完全遵循客户端原始请求参数 | 让客户端自主控制推理 |
-| `off` | 强制禁用推理，删除所有推理字段 | 快速响应场景 |
-| `low` | 轻度推理 (4096 tokens) | 简单任务 |
-| `medium` | 中度推理 (12288 tokens) | 平衡性能与质量 |
-| `high` | 深度推理 (24576 tokens) | 复杂任务 |
-
-### 令牌多久刷新一次？
-
-系统每6小时自动刷新一次访问令牌。刷新令牌有效期为8小时，确保有2小时的缓冲时间。
-
-### 如何检查令牌状态？
-
-查看服务器日志，成功刷新时会显示：
-```
-Token refreshed successfully, expires at: 2025-01-XX XX:XX:XX
-```
-
-### Claude Code无法连接怎么办？
-
-1. 确保droid2api服务器正在运行：`curl http://localhost:3000/v1/models`
-2. 检查Claude Code的API Base URL设置
-3. 确认防火墙没有阻止端口3000
-
-### 推理功能为什么没有生效？
-
-**如果推理级别设置无效**：
-1. 检查模型配置中的 `reasoning` 字段是否为有效值 (`auto/off/low/medium/high`)
-2. 确认模型ID是否正确匹配config.json中的配置
-3. 查看服务器日志确认推理字段是否正确处理
-
-**如果使用auto模式但推理不生效**：
-1. 确认客户端请求中包含了推理字段 (`reasoning` 或 `thinking`)
-2. auto模式不会添加推理字段，只会保留客户端原有的设置
-3. 如需强制推理，请改用 `low/medium/high` 级别
-
-**推理字段对应关系**：
-- OpenAI模型 (`gpt-*`) → 使用 `reasoning` 字段
-- Anthropic模型 (`claude-*`) → 使用 `thinking` 字段
-
-### 如何更改端口？
-
-编辑 `config.json` 中的 `port` 字段：
-
-```json
-{
-  "port": 8080
-}
-```
-
-### 如何启用调试日志？
-
-在 `config.json` 中设置：
-
-```json
-{
-  "dev_mode": true
-}
-```
-
-## 故障排查
-
-### 认证失败
-
-确保已正确配置 refresh token：
-- 设置环境变量 `DROID_REFRESH_KEY`
-- 或创建 `~/.factory/auth.json` 文件
-
-### 模型不可用
-
-检查 `config.json` 中的模型配置，确保模型 ID 和类型正确。
 
 ## 许可证
 

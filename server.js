@@ -1,158 +1,80 @@
-import express from 'express';
-import { loadConfig, isDevMode, getPort } from './config.js';
-import { logInfo, logError } from './logger.js';
-import router from './routes.js';
-import { initializeAuth } from './auth.js';
-import { initializeUserAgentUpdater } from './user-agent-updater.js';
+/**
+ * @file 服务器入口
+ * @description droid2api 应用启动入口
+ *              负责加载配置、初始化各服务模块、启动 HTTP 服务器
+ */
 
-const app = express();
-
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, anthropic-version');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
-
-app.use(router);
-
-app.get('/', (req, res) => {
-  res.json({
-    name: 'droid2api',
-    version: '1.0.0',
-    description: 'OpenAI Compatible API Proxy',
-    endpoints: [
-      'GET /v1/models',
-      'POST /v1/chat/completions',
-      'POST /v1/responses',
-      'POST /v1/messages',
-      'POST /v1/messages/count_tokens'
-    ]
-  });
-});
-
-// 404 处理 - 捕获所有未匹配的路由
-app.use((req, res, next) => {
-  const errorInfo = {
-    timestamp: new Date().toISOString(),
-    method: req.method,
-    url: req.originalUrl || req.url,
-    path: req.path,
-    query: req.query,
-    params: req.params,
-    body: req.body,
-    headers: {
-      'content-type': req.headers['content-type'],
-      'user-agent': req.headers['user-agent'],
-      'origin': req.headers['origin'],
-      'referer': req.headers['referer']
-    },
-    ip: req.ip || req.connection.remoteAddress
-  };
-
-  console.error('\n' + '='.repeat(80));
-  console.error('❌ 非法请求地址');
-  console.error('='.repeat(80));
-  console.error(`时间: ${errorInfo.timestamp}`);
-  console.error(`方法: ${errorInfo.method}`);
-  console.error(`地址: ${errorInfo.url}`);
-  console.error(`路径: ${errorInfo.path}`);
-  
-  if (Object.keys(errorInfo.query).length > 0) {
-    console.error(`查询参数: ${JSON.stringify(errorInfo.query, null, 2)}`);
-  }
-  
-  if (errorInfo.body && Object.keys(errorInfo.body).length > 0) {
-    console.error(`请求体: ${JSON.stringify(errorInfo.body, null, 2)}`);
-  }
-  
-  console.error(`客户端IP: ${errorInfo.ip}`);
-  console.error(`User-Agent: ${errorInfo.headers['user-agent'] || 'N/A'}`);
-  
-  if (errorInfo.headers.referer) {
-    console.error(`来源: ${errorInfo.headers.referer}`);
-  }
-  
-  console.error('='.repeat(80) + '\n');
-
-  logError('Invalid request path', errorInfo);
-
-  res.status(404).json({
-    error: 'Not Found',
-    message: `路径 ${req.method} ${req.path} 不存在`,
-    timestamp: errorInfo.timestamp,
-    availableEndpoints: [
-      'GET /v1/models',
-      'POST /v1/chat/completions',
-      'POST /v1/responses',
-      'POST /v1/messages',
-      'POST /v1/messages/count_tokens'
-    ]
-  });
-});
-
-// 错误处理中间件
-app.use((err, req, res, next) => {
-  logError('Unhandled error', err);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: isDevMode() ? err.message : undefined
-  });
-});
+import { loadConfig, getPort, isDevMode, initHotReload, onConfigChange } from './src/config/index.js';
+import { logInfo, logError } from './src/utils/logger.js';
+import { initializeAuth } from './src/services/auth.js';
+import { initializeUserAgentUpdater } from './src/services/user-agent-updater.js';
+import app from './src/app.js';
 
 (async () => {
   try {
+    // 1. 加载配置文件
     loadConfig();
-    logInfo('Configuration loaded successfully');
-    logInfo(`Dev mode: ${isDevMode()}`);
-    
-    // Initialize User-Agent version updater
-    initializeUserAgentUpdater();
-    
-    // Initialize auth system (load and setup API key if needed)
-    // This won't throw error if no auth config is found - will use client auth
-    await initializeAuth();
-    
-    const PORT = getPort();
-  logInfo(`Starting server on port ${PORT}...`);
-  
-  const server = app.listen(PORT)
-    .on('listening', () => {
-      logInfo(`Server running on http://localhost:${PORT}`);
-      logInfo('Available endpoints:');
-      logInfo('  GET  /v1/models');
-      logInfo('  POST /v1/chat/completions');
-      logInfo('  POST /v1/responses');
-      logInfo('  POST /v1/messages');
-      logInfo('  POST /v1/messages/count_tokens');
-    })
-    .on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.error(`\n${'='.repeat(80)}`);
-        console.error(`ERROR: Port ${PORT} is already in use!`);
-        console.error('');
-        console.error('Please choose one of the following options:');
-        console.error(`  1. Stop the process using port ${PORT}:`);
-        console.error(`     lsof -ti:${PORT} | xargs kill`);
-        console.error('');
-        console.error('  2. Change the port in config.json:');
-        console.error('     Edit config.json and modify the "port" field');
-        console.error(`${'='.repeat(80)}\n`);
-        process.exit(1);
-      } else {
-        logError('Failed to start server', err);
-        process.exit(1);
+    logInfo('配置文件加载成功');
+    logInfo(`开发模式: ${isDevMode()}`);
+
+    // 2. 启用配置热加载
+    initHotReload();
+
+    // 3. 注册认证配置变更回调 - 配置文件修改后自动重新初始化认证
+    onConfigChange(async (newConfig, oldConfig) => {
+      const authChanged =
+        JSON.stringify(oldConfig.auth || {}) !== JSON.stringify(newConfig.auth || {});
+
+      if (authChanged) {
+        logInfo('检测到认证配置变更，正在重新初始化认证系统...');
+        try {
+          await initializeAuth(true);
+        } catch (error) {
+          logError('热加载认证系统失败', error);
+        }
       }
     });
+
+    // 4. 初始化 User-Agent 版本更新器
+    initializeUserAgentUpdater();
+
+    // 5. 初始化认证系统
+    await initializeAuth();
+
+    // 6. 启动 HTTP 服务器
+    const PORT = getPort();
+    logInfo(`正在启动服务器，端口: ${PORT}...`);
+
+    const server = app
+      .listen(PORT)
+      .on('listening', () => {
+        logInfo(`服务器已启动: http://localhost:${PORT}`);
+        logInfo('可用端点:');
+        logInfo('  GET  /v1/models');
+        logInfo('  POST /v1/chat/completions');
+        logInfo('  POST /v1/responses');
+        logInfo('  POST /v1/messages');
+        logInfo('  POST /v1/messages/count_tokens');
+      })
+      .on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`\n${'='.repeat(80)}`);
+          console.error(`错误: 端口 ${PORT} 已被占用！`);
+          console.error('');
+          console.error('请选择以下操作之一:');
+          console.error(`  1. 停止占用端口 ${PORT} 的进程:`);
+          console.error(`     lsof -ti:${PORT} | xargs kill`);
+          console.error('');
+          console.error('  2. 修改配置文件 config/app.yaml 中的 port 字段');
+          console.error(`${'='.repeat(80)}\n`);
+          process.exit(1);
+        } else {
+          logError('服务器启动失败', err);
+          process.exit(1);
+        }
+      });
   } catch (error) {
-    logError('Failed to start server', error);
+    logError('服务器启动失败', error);
     process.exit(1);
   }
 })();

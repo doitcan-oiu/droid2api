@@ -1,59 +1,57 @@
-import { logDebug } from '../logger.js';
-import { getSystemPrompt, getModelReasoning, getUserAgent } from '../config.js';
+/**
+ * @file OpenAI 请求转换器
+ * @description 将标准 OpenAI chat/completions 格式转换为 OpenAI Responses API 格式
+ *              处理消息格式、系统提示词注入、推理参数配置、请求头生成
+ */
 
+import { logDebug } from '../utils/logger.js';
+import { getSystemPrompt, getModelReasoning, getUserAgent } from '../config/index.js';
+import { generateUUID } from '../utils/id-generator.js';
+
+/**
+ * 将 OpenAI chat/completions 格式转换为 Responses API 格式
+ * @param {object} openaiRequest - 标准 OpenAI 格式的请求
+ * @returns {object} Responses API 格式的请求
+ */
 export function transformToOpenAI(openaiRequest) {
-  logDebug('Transforming OpenAI request to target OpenAI format');
-  
+  logDebug('正在将 OpenAI 请求转换为 Responses API 格式');
+
   const targetRequest = {
     model: openaiRequest.model,
     input: [],
-    store: false
+    store: false,
   };
 
-  // Only add stream parameter if explicitly provided by client
+  // 仅在客户端明确指定时传递 stream 参数
   if (openaiRequest.stream !== undefined) {
     targetRequest.stream = openaiRequest.stream;
   }
 
-  // Transform max_tokens to max_output_tokens
+  // 转换 max_tokens -> max_output_tokens
   if (openaiRequest.max_tokens) {
     targetRequest.max_output_tokens = openaiRequest.max_tokens;
   } else if (openaiRequest.max_completion_tokens) {
     targetRequest.max_output_tokens = openaiRequest.max_completion_tokens;
   }
 
-  // Transform messages to input
+  // 转换消息格式: messages -> input
   if (openaiRequest.messages && Array.isArray(openaiRequest.messages)) {
     for (const msg of openaiRequest.messages) {
-      const inputMsg = {
-        role: msg.role,
-        content: []
-      };
+      const inputMsg = { role: msg.role, content: [] };
 
-      // Determine content type based on role
-      // user role uses 'input_text', assistant role uses 'output_text'
+      // 根据角色决定内容类型前缀
       const textType = msg.role === 'assistant' ? 'output_text' : 'input_text';
       const imageType = msg.role === 'assistant' ? 'output_image' : 'input_image';
 
       if (typeof msg.content === 'string') {
-        inputMsg.content.push({
-          type: textType,
-          text: msg.content
-        });
+        inputMsg.content.push({ type: textType, text: msg.content });
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
           if (part.type === 'text') {
-            inputMsg.content.push({
-              type: textType,
-              text: part.text
-            });
+            inputMsg.content.push({ type: textType, text: part.text });
           } else if (part.type === 'image_url') {
-            inputMsg.content.push({
-              type: imageType,
-              image_url: part.image_url
-            });
+            inputMsg.content.push({ type: imageType, image_url: part.image_url });
           } else {
-            // Pass through other types as-is
             inputMsg.content.push(part);
           }
         }
@@ -63,56 +61,51 @@ export function transformToOpenAI(openaiRequest) {
     }
   }
 
-  // Transform tools if present
+  // 转换工具定义
   if (openaiRequest.tools && Array.isArray(openaiRequest.tools)) {
-    targetRequest.tools = openaiRequest.tools.map(tool => ({
+    targetRequest.tools = openaiRequest.tools.map((tool) => ({
       ...tool,
-      strict: false
+      strict: false,
     }));
   }
 
-  // Extract system message as instructions and prepend system prompt
+  // 提取系统消息作为 instructions，并注入系统提示词
   const systemPrompt = getSystemPrompt();
-  const systemMessage = openaiRequest.messages?.find(m => m.role === 'system');
-  
+  const systemMessage = openaiRequest.messages?.find((m) => m.role === 'system');
+
   if (systemMessage) {
     let userInstructions = '';
     if (typeof systemMessage.content === 'string') {
       userInstructions = systemMessage.content;
     } else if (Array.isArray(systemMessage.content)) {
       userInstructions = systemMessage.content
-        .filter(p => p.type === 'text')
-        .map(p => p.text)
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text)
         .join('\n');
     }
     targetRequest.instructions = systemPrompt + userInstructions;
-    targetRequest.input = targetRequest.input.filter(m => m.role !== 'system');
+    // 从 input 中移除系统消息
+    targetRequest.input = targetRequest.input.filter((m) => m.role !== 'system');
   } else if (systemPrompt) {
-    // If no user-provided system message, just add the system prompt
     targetRequest.instructions = systemPrompt;
   }
 
-  // Handle reasoning field based on model configuration
+  // 处理推理(reasoning)参数
   const reasoningLevel = getModelReasoning(openaiRequest.model);
   if (reasoningLevel === 'auto') {
-    // Auto mode: preserve original request's reasoning field exactly as-is
+    // auto 模式：保留客户端原始 reasoning 设置
     if (openaiRequest.reasoning !== undefined) {
       targetRequest.reasoning = openaiRequest.reasoning;
     }
-    // If original request has no reasoning field, don't add one
   } else if (reasoningLevel && ['low', 'medium', 'high', 'xhigh'].includes(reasoningLevel)) {
-    // Specific level: override with model configuration
-    targetRequest.reasoning = {
-      effort: reasoningLevel,
-      summary: 'auto'
-    };
+    // 指定级别：覆盖为配置值
+    targetRequest.reasoning = { effort: reasoningLevel, summary: 'auto' };
   } else {
-    // Off or invalid: explicitly remove reasoning field
-    // This ensures any reasoning field from the original request is deleted
+    // off 或无效值：移除 reasoning 字段
     delete targetRequest.reasoning;
   }
 
-  // Pass through other parameters
+  // 透传兼容参数
   if (openaiRequest.temperature !== undefined) {
     targetRequest.temperature = openaiRequest.temperature;
   }
@@ -129,27 +122,33 @@ export function transformToOpenAI(openaiRequest) {
     targetRequest.parallel_tool_calls = openaiRequest.parallel_tool_calls;
   }
 
-  logDebug('Transformed target OpenAI request', targetRequest);
+  logDebug('OpenAI Responses API 请求转换完成', targetRequest);
   return targetRequest;
 }
 
+/**
+ * 生成 OpenAI API 请求头
+ * @param {string} authHeader - 认证头
+ * @param {object} clientHeaders - 客户端原始请求头
+ * @param {string} provider - 提供商标识
+ * @returns {object} 请求头对象
+ */
 export function getOpenAIHeaders(authHeader, clientHeaders = {}, provider = 'openai') {
-  // Generate unique IDs if not provided
   const sessionId = clientHeaders['x-session-id'] || generateUUID();
   const messageId = clientHeaders['x-assistant-message-id'] || generateUUID();
-  
+
   const headers = {
     'content-type': 'application/json',
-    'authorization': authHeader || '',
+    authorization: authHeader || '',
     'x-api-provider': provider,
     'x-factory-client': 'cli',
     'x-session-id': sessionId,
     'x-assistant-message-id': messageId,
     'user-agent': getUserAgent(),
-    'connection': 'keep-alive'
+    connection: 'keep-alive',
   };
 
-  // Pass through Stainless SDK headers with defaults
+  // Stainless SDK 默认头
   const stainlessDefaults = {
     'x-stainless-arch': 'x64',
     'x-stainless-lang': 'js',
@@ -157,21 +156,12 @@ export function getOpenAIHeaders(authHeader, clientHeaders = {}, provider = 'ope
     'x-stainless-runtime': 'node',
     'x-stainless-retry-count': '0',
     'x-stainless-package-version': '5.23.2',
-    'x-stainless-runtime-version': 'v24.3.0'
+    'x-stainless-runtime-version': 'v24.3.0',
   };
 
-  // Copy Stainless headers from client or use defaults
-  Object.keys(stainlessDefaults).forEach(header => {
+  Object.keys(stainlessDefaults).forEach((header) => {
     headers[header] = clientHeaders[header] || stainlessDefaults[header];
   });
 
   return headers;
-}
-
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0;
-    const v = c == 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
 }
