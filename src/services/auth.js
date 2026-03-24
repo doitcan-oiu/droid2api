@@ -225,14 +225,20 @@ export async function initializeAuth(isReload = false) {
         }
       } catch (error) {
         logError(`  [${account.label}] 初始化失败: ${error.message}`);
-        // 单个账户失败不阻塞其他账户
-        if (!isReload && accounts.length === 1) {
-          throw error; // 只有一个账户且首次启动时，抛出异常
-        }
+        // 单个账户失败不阻塞启动，继续尝试下一个
       }
     }
 
-    logInfo('认证系统初始化完成');
+    // 检查是否有任何账户可用
+    const availableAccounts = accounts.filter((a) => a.accessToken);
+    if (availableAccounts.length > 0) {
+      logInfo(`认证系统初始化完成（${availableAccounts.length}/${accounts.length} 个账户可用）`);
+    } else {
+      // 所有账户都不可用，降级为客户端授权模式
+      logInfo('所有刷新令牌账户均不可用，降级为客户端授权模式');
+      logInfo('提示: 可通过环境变量 DROID_REFRESH_KEY 设置有效令牌，或在请求中携带 Authorization 头');
+      authMode = 'client';
+    }
     return;
   }
 
