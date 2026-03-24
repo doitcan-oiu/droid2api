@@ -17,26 +17,21 @@ user_agent: "factory-cli/0.84.0"
 
 # ============================================================
 # 认证配置
-# 优先级：factory_api_keys > refresh_keys > 客户端 Authorization
+# 优先级：factory_api_keys > data/auth.json 账户 > 客户端 Authorization
 #
-# 支持多账户：配置多个时自动轮询
-# 也支持环境变量（逗号分隔多个值）：
-#   FACTORY_API_KEY=key1,key2
-#   DROID_REFRESH_KEY=token1,token2
-# 环境变量与配置文件会合并（去重），环境变量的排在前面
+# 刷新令牌通过 API 接口管理，不再在此处配置：
+#   POST   /api/auth/keys      添加刷新令牌（提交后立即验证）
+#   GET    /api/auth/status     查看认证状态
+#   DELETE /api/auth/keys/:id   删除账户
+#
+# 首次部署可通过环境变量 DROID_REFRESH_KEY 传入初始令牌（逗号分隔多个）
+# 也可通过环境变量 FACTORY_API_KEY 传入固定密钥（逗号分隔多个）
 # ============================================================
 auth:
   # 固定 API 密钥（跳过自动刷新，多个时轮询）
   factory_api_keys: []
     # - "your_factory_api_key_1"
     # - "your_factory_api_key_2"
-
-  # 刷新令牌（自动刷新 access_token，多个时轮询）
-  # 每个 token 只需填一次初始值，运行时的最新令牌自动保存在 data/auth.json
-  # 云端部署请使用环境变量 DROID_REFRESH_KEY 设置，不要写在此文件中
-  refresh_keys: []
-    # - "your_refresh_token_1"
-    # - "your_refresh_token_2"
 
 # ============================================================
 # 模型重定向映射

@@ -228,8 +228,8 @@ export function getRedirectedModelId(modelId) {
 
 /**
  * 获取认证配置（合并 YAML 配置与环境变量，去重）
- * 环境变量支持逗号分隔多个值，与配置文件合并
- * @returns {object} { factory_api_keys: string[], refresh_keys: string[] }
+ * 仅管理 factory_api_keys，刷新令牌由 data/auth.json + API 管理
+ * @returns {object} { factory_api_keys: string[] }
  */
 export function getAuthConfig() {
   const cfg = getConfig();
@@ -240,24 +240,16 @@ export function getAuthConfig() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const envRefreshKeys = (process.env.DROID_REFRESH_KEY || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
 
   // 从配置文件获取
   const yamlFactoryKeys = Array.isArray(authCfg.factory_api_keys)
     ? authCfg.factory_api_keys.filter(Boolean)
     : [];
-  const yamlRefreshKeys = Array.isArray(authCfg.refresh_keys)
-    ? authCfg.refresh_keys.filter(Boolean)
-    : [];
 
-  // 合并去重（环境变量优先排在前面）
+  // 合并去重
   const factory_api_keys = [...new Set([...envFactoryKeys, ...yamlFactoryKeys])];
-  const refresh_keys = [...new Set([...envRefreshKeys, ...yamlRefreshKeys])];
 
-  return { factory_api_keys, refresh_keys };
+  return { factory_api_keys };
 }
 
 /** 导出项目根目录供其他模块使用 */

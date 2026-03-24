@@ -25,7 +25,7 @@ import { transformToOpenAI, getOpenAIHeaders } from '../transformers/request-ope
 import { transformToCommon, getCommonHeaders } from '../transformers/request-common.js';
 import { AnthropicResponseTransformer } from '../transformers/response-anthropic.js';
 import { OpenAIResponseTransformer } from '../transformers/response-openai.js';
-import { getApiKey } from '../services/auth.js';
+import { getApiKey, addRefreshKey, removeRefreshKey, getAuthStatus } from '../services/auth.js';
 import { getNextProxyAgent } from '../services/proxy-manager.js';
 
 const router = express.Router();
@@ -638,5 +638,49 @@ router.post('/v1/chat/completions', handleChatCompletions);
 router.post('/v1/responses', handleDirectResponses);
 router.post('/v1/messages', handleDirectMessages);
 router.post('/v1/messages/count_tokens', handleCountTokens);
+
+// ======================== 认证管理 API ========================
+
+/**
+ * GET /api/auth/status - 查看认证状态
+ */
+router.get('/api/auth/status', (req, res) => {
+  res.json(getAuthStatus());
+});
+
+/**
+ * POST /api/auth/keys - 添加刷新令牌
+ * 请求体: { "key": "refresh_token_value" }
+ * 提交后立即刷新验证，成功后自动保存到 data/auth.json
+ */
+router.post('/api/auth/keys', async (req, res) => {
+  const { key } = req.body || {};
+
+  if (!key || typeof key !== 'string' || key.trim() === '') {
+    return res.status(400).json({ error: '请提供 key 字段（刷新令牌）' });
+  }
+
+  try {
+    const result = await addRefreshKey(key);
+    res.json(result);
+  } catch (error) {
+    logError('添加刷新令牌失败', error);
+    res.status(400).json({ error: '令牌验证失败', message: error.message });
+  }
+});
+
+/**
+ * DELETE /api/auth/keys/:index - 删除指定账户
+ */
+router.delete('/api/auth/keys/:index', (req, res) => {
+  const index = parseInt(req.params.index, 10);
+
+  if (isNaN(index)) {
+    return res.status(400).json({ error: '无效的索引' });
+  }
+
+  const result = removeRefreshKey(index);
+  res.status(result.success ? 200 : 400).json(result);
+});
 
 export default router;
