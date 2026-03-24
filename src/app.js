@@ -4,9 +4,14 @@
  */
 
 import express from 'express';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import router from './routes/api.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { notFoundHandler, errorHandler } from './middleware/error-handler.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -21,6 +26,11 @@ app.use(corsMiddleware);
 
 // API 路由
 app.use(router);
+
+// 令牌管理页面
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'auth-admin.html'));
+});
 
 // 根路径 - 服务信息
 app.get('/', (req, res) => {
