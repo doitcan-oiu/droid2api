@@ -15,7 +15,9 @@ COPY server.js ./
 COPY src/ ./src/
 COPY config/ ./config/
 
-# data/ 目录由程序按需自动创建（存储 refresh token 运行时状态）
+# 声明持久化卷（存储刷新后的令牌状态）
+# Zeabur/Docker 等平台会自动识别并提供持久化存储
+VOLUME /app/data
 
 # 暴露端口
 EXPOSE 3000
