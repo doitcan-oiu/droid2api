@@ -5,7 +5,7 @@
  */
 
 import { logDebug } from '../utils/logger.js';
-import { getSystemPrompt, getModelReasoning, getUserAgent } from '../config/index.js';
+import { getSystemPrompt, getModelReasoning, getModelFast, getUserAgent } from '../config/index.js';
 import { generateUUID } from '../utils/id-generator.js';
 
 /**
@@ -103,6 +103,13 @@ export function transformToOpenAI(openaiRequest) {
   } else {
     // off 或无效值：移除 reasoning 字段
     delete targetRequest.reasoning;
+  }
+
+  // fast 模式：设置 service_tier 为 priority
+  if (getModelFast(openaiRequest.model) && openaiRequest.service_tier === undefined) {
+    targetRequest.service_tier = 'priority';
+  } else if (openaiRequest.service_tier !== undefined) {
+    targetRequest.service_tier = openaiRequest.service_tier;
   }
 
   // 透传兼容参数

@@ -5,7 +5,7 @@
  */
 
 import { logDebug } from '../utils/logger.js';
-import { getSystemPrompt, getModelReasoning, getUserAgent } from '../config/index.js';
+import { getSystemPrompt, getModelReasoning, getModelFast, getUserAgent } from '../config/index.js';
 import { generateUUID } from '../utils/id-generator.js';
 
 /**
@@ -191,6 +191,14 @@ export function getAnthropicHeaders(
   } else {
     // off/无效：移除 thinking beta
     betaValues = betaValues.filter((v) => v !== thinkingBeta);
+  }
+
+  // fast 模式：添加 fast-mode beta
+  const fastModeBeta = 'fast-mode-2026-02-01';
+  if (modelId && getModelFast(modelId)) {
+    if (!betaValues.includes(fastModeBeta)) {
+      betaValues.push(fastModeBeta);
+    }
   }
 
   if (betaValues.length > 0) {

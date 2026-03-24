@@ -79,6 +79,9 @@ proxies: []
 #   medium - 中度推理 (Anthropic: 12288 tokens)
 #   high   - 深度推理 (Anthropic: 24576 tokens)
 #   xhigh  - 超深度推理 (Anthropic: 40960 tokens)
+# fast 字段: true 时启用快速模式
+#   Anthropic 模型 → 自动添加 anthropic-beta: fast-mode-2026-02-01
+#   OpenAI 模型   → 自动设置 service_tier: priority
 # ============================================================
 models:
   - name: "Opus 4.5"
@@ -91,6 +94,13 @@ models:
     id: "claude-opus-4-6"
     type: anthropic
     reasoning: auto
+    provider: anthropic
+
+  - name: "Opus 4.6 Fast"
+    id: "claude-opus-4-6-fast"
+    type: anthropic
+    reasoning: auto
+    fast: true
     provider: anthropic
 
   - name: "Haiku 4.5"
@@ -115,6 +125,13 @@ models:
     id: "gpt-5.4"
     type: openai
     reasoning: auto
+    provider: openai
+
+  - name: "GPT-5.4 Fast"
+    id: "gpt-5.4-fast"
+    type: openai
+    reasoning: auto
+    fast: true
     provider: openai
 
   - name: "GPT-5.4 mini"

@@ -181,6 +181,16 @@ export function getModelProvider(modelId) {
 }
 
 /**
+ * 判断模型是否启用 fast 模式
+ * @param {string} modelId - 模型ID
+ * @returns {boolean}
+ */
+export function getModelFast(modelId) {
+  const model = getModelById(modelId);
+  return model?.fast === true;
+}
+
+/**
  * 获取当前 User-Agent 字符串
  * @returns {string}
  */
