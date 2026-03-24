@@ -8,6 +8,7 @@
  *              - POST /v1/messages/count_tokens Anthropic 计算 token 数
  */
 
+import fs from 'fs';
 import express from 'express';
 import fetch from 'node-fetch';
 import {
@@ -18,6 +19,9 @@ import {
   getModelReasoning,
   getRedirectedModelId,
   getModelProvider,
+  getRetryConfig,
+  CONFIG_PATH,
+  loadConfig,
 } from '../config/index.js';
 import { logInfo, logDebug, logError, logRequest, logResponse } from '../utils/logger.js';
 import { transformToAnthropic, getAnthropicHeaders } from '../transformers/request-anthropic.js';
@@ -25,7 +29,14 @@ import { transformToOpenAI, getOpenAIHeaders } from '../transformers/request-ope
 import { transformToCommon, getCommonHeaders } from '../transformers/request-common.js';
 import { AnthropicResponseTransformer } from '../transformers/response-anthropic.js';
 import { OpenAIResponseTransformer } from '../transformers/response-openai.js';
-import { getApiKey, addRefreshKey, removeRefreshKey, getAuthStatus } from '../services/auth.js';
+import {
+  getApiKeyWithMeta,
+  addRefreshKey,
+  removeRefreshKey,
+  getAuthStatus,
+  lockAccount,
+  unlockAccount,
+} from '../services/auth.js';
 import { getNextProxyAgent } from '../services/proxy-manager.js';
 
 const router = express.Router();
@@ -137,32 +148,63 @@ function convertAnthropicToChatCompletion(resp) {
 }
 
 /**
- * 通用的 API Key 获取封装
- * @param {object} req - Express 请求对象
- * @returns {Promise<string|null>} 认证头字符串，失败时返回 null 并向客户端返回错误
+ * 获取客户端认证头
  */
-async function resolveAuthHeader(req, res) {
-  try {
-    const clientAuthFromXApiKey = req.headers['x-api-key']
-      ? `Bearer ${req.headers['x-api-key']}`
-      : null;
-    return await getApiKey(req.headers.authorization || clientAuthFromXApiKey);
-  } catch (error) {
-    logError('获取 API Key 失败', error);
-    res.status(500).json({
-      error: 'API key not available',
-      message: '获取或刷新 API Key 失败，请检查服务器日志。',
-    });
-    return null;
-  }
+function getClientAuth(req) {
+  const fromXApiKey = req.headers['x-api-key'] ? `Bearer ${req.headers['x-api-key']}` : null;
+  return req.headers.authorization || fromXApiKey || null;
 }
 
 /**
- * 创建代理请求并发送
+ * 带重试的代理请求
+ * 当上游返回可锁定状态码时，自动锁定当前账户并切换到下一个账户重试
+ * @param {object} req - Express 请求对象
  * @param {string} url - 目标 URL
- * @param {object} headers - 请求头
+ * @param {Function} buildHeadersFn - (authHeader) => headers 的函数
  * @param {object} body - 请求体
- * @returns {Promise<Response>}
+ * @returns {Promise<Response>} 上游响应
+ */
+async function proxyWithRetry(req, url, buildHeadersFn, body) {
+  const { maxRetries, lockStatusCodes } = getRetryConfig();
+  const clientAuth = getClientAuth(req);
+  const excludeIndices = new Set();
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // 获取认证
+    const { authorization, accountIndex } = await getApiKeyWithMeta(clientAuth, excludeIndices);
+    const headers = buildHeadersFn(authorization);
+
+    // 发送请求
+    const proxyAgentInfo = getNextProxyAgent(url);
+    const fetchOptions = { method: 'POST', headers, body: JSON.stringify(body) };
+    if (proxyAgentInfo?.agent) fetchOptions.agent = proxyAgentInfo.agent;
+
+    logRequest('POST', url, headers, body);
+    const response = await fetch(url, fetchOptions);
+    logInfo(`响应状态: ${response.status}`);
+
+    // 检查是否需要锁定并重试
+    if (lockStatusCodes.includes(response.status) && accountIndex >= 0) {
+      const errorText = await response.text();
+      lockAccount(accountIndex, `HTTP ${response.status}`);
+      excludeIndices.add(accountIndex);
+
+      if (attempt < maxRetries) {
+        logInfo(`账户 #${accountIndex} 已锁定(${response.status})，重试 ${attempt + 1}/${maxRetries}...`);
+        continue;
+      }
+      // 最后一次重试也失败，返回错误
+      return { ok: false, status: response.status, errorText };
+    }
+
+    return response;
+  }
+
+  throw new Error('所有重试均失败');
+}
+
+/**
+ * 创建代理请求并发送（简版，无重试）
  */
 async function proxyFetch(url, headers, body) {
   const proxyAgentInfo = getNextProxyAgent(url);
@@ -217,67 +259,55 @@ async function handleChatCompletions(req, res) {
     const openaiRequest = req.body;
     const modelId = getRedirectedModelId(openaiRequest.model);
 
-    if (!modelId) {
-      return res.status(400).json({ error: 'model 参数是必需的' });
-    }
+    if (!modelId) return res.status(400).json({ error: 'model 参数是必需的' });
 
     const model = getModelById(modelId);
-    if (!model) {
-      return res.status(404).json({ error: `模型 ${modelId} 未找到` });
-    }
+    if (!model) return res.status(404).json({ error: `模型 ${modelId} 未找到` });
 
     const endpoint = getEndpointByType(model.type);
-    if (!endpoint) {
-      return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
-    }
+    if (!endpoint) return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
 
     logInfo(`路由到 ${model.type} 端点: ${endpoint.base_url}`);
 
-    // 获取认证头
-    const authHeader = await resolveAuthHeader(req, res);
-    if (!authHeader) return;
-
     const clientHeaders = req.headers;
-    logDebug('客户端请求头', {
-      'x-factory-client': clientHeaders['x-factory-client'],
-      'x-session-id': clientHeaders['x-session-id'],
-      'user-agent': clientHeaders['user-agent'],
-    });
-
-    // 更新模型ID（重定向后）
     const requestWithRedirectedModel = { ...openaiRequest, model: modelId };
     const provider = getModelProvider(modelId);
 
     // 根据端点类型进行请求转换
     let transformedRequest;
-    let headers;
-
     if (model.type === 'anthropic') {
       transformedRequest = transformToAnthropic(requestWithRedirectedModel);
-      const isStreaming = openaiRequest.stream === true;
-      headers = getAnthropicHeaders(authHeader, clientHeaders, isStreaming, modelId, provider);
     } else if (model.type === 'openai') {
       transformedRequest = transformToOpenAI(requestWithRedirectedModel);
-      headers = getOpenAIHeaders(authHeader, clientHeaders, provider);
     } else if (model.type === 'common') {
       transformedRequest = transformToCommon(requestWithRedirectedModel);
-      headers = getCommonHeaders(authHeader, clientHeaders, provider);
     } else {
       return res.status(500).json({ error: `未知的端点类型: ${model.type}` });
     }
 
-    logRequest('POST', endpoint.base_url, headers, transformedRequest);
+    // 构建请求头的函数（认证头由 proxyWithRetry 注入）
+    const buildHeaders = (authHeader) => {
+      if (model.type === 'anthropic') {
+        const isStreaming = openaiRequest.stream === true;
+        return getAnthropicHeaders(authHeader, clientHeaders, isStreaming, modelId, provider);
+      } else if (model.type === 'openai') {
+        return getOpenAIHeaders(authHeader, clientHeaders, provider);
+      } else {
+        return getCommonHeaders(authHeader, clientHeaders, provider);
+      }
+    };
 
-    const response = await proxyFetch(endpoint.base_url, headers, transformedRequest);
-    logInfo(`响应状态: ${response.status}`);
+    // 带重试的代理请求
+    const response = await proxyWithRetry(req, endpoint.base_url, buildHeaders, transformedRequest);
+
+    if (response.errorText) {
+      return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: response.errorText });
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
       logError(`端点错误: ${response.status}`, new Error(errorText));
-      return res.status(response.status).json({
-        error: `端点返回 ${response.status}`,
-        details: errorText,
-      });
+      return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: errorText });
     }
 
     const isStreaming = transformedRequest.stream === true;
@@ -288,63 +318,22 @@ async function handleChatCompletions(req, res) {
       res.setHeader('Connection', 'keep-alive');
 
       if (model.type === 'common') {
-        // common 类型直接转发流式响应
-        try {
-          for await (const chunk of response.body) {
-            res.write(chunk);
-          }
-          res.end();
-          logInfo('流式响应已转发 (common 类型)');
-        } catch (streamError) {
-          logError('流式传输错误', streamError);
-          res.end();
-        }
+        try { for await (const chunk of response.body) { res.write(chunk); } res.end(); logInfo('流式响应已转发'); }
+        catch (e) { logError('流式传输错误', e); res.end(); }
       } else {
-        // anthropic / openai 类型使用转换器
-        let transformer;
-        if (model.type === 'anthropic') {
-          transformer = new AnthropicResponseTransformer(modelId, `chatcmpl-${Date.now()}`);
-        } else if (model.type === 'openai') {
-          transformer = new OpenAIResponseTransformer(modelId, `chatcmpl-${Date.now()}`);
-        }
-
-        try {
-          for await (const chunk of transformer.transformStream(response.body)) {
-            res.write(chunk);
-          }
-          res.end();
-          logInfo('流式响应已完成');
-        } catch (streamError) {
-          logError('流式传输错误', streamError);
-          res.end();
-        }
+        const transformer = model.type === 'anthropic'
+          ? new AnthropicResponseTransformer(modelId, `chatcmpl-${Date.now()}`)
+          : new OpenAIResponseTransformer(modelId, `chatcmpl-${Date.now()}`);
+        try { for await (const chunk of transformer.transformStream(response.body)) { res.write(chunk); } res.end(); logInfo('流式响应已完成'); }
+        catch (e) { logError('流式传输错误', e); res.end(); }
       }
     } else {
-      // 非流式响应 - 统一转换为 chat/completions 格式
       const data = await response.json();
       if (model.type === 'openai') {
-        try {
-          const converted = convertResponseToChatCompletion(data);
-          logResponse(200, null, converted);
-          res.json(converted);
-        } catch (e) {
-          logResponse(200, null, data);
-          res.json(data);
-        }
+        try { res.json(convertResponseToChatCompletion(data)); } catch (e) { res.json(data); }
       } else if (model.type === 'anthropic') {
-        try {
-          const converted = convertAnthropicToChatCompletion(data);
-          logResponse(200, null, converted);
-          res.json(converted);
-        } catch (e) {
-          // 转换失败时回退为原始数据
-          logError('Anthropic 响应格式转换失败，返回原始数据', e);
-          logResponse(200, null, data);
-          res.json(data);
-        }
+        try { res.json(convertAnthropicToChatCompletion(data)); } catch (e) { res.json(data); }
       } else {
-        // common 类型本身就是 OpenAI 格式，直接返回
-        logResponse(200, null, data);
         res.json(data);
       }
     }
@@ -356,280 +345,106 @@ async function handleChatCompletions(req, res) {
 
 /**
  * POST /v1/responses - 直接转发到 OpenAI Responses API
- * 仅支持 openai 类型端点的模型
  */
 async function handleDirectResponses(req, res) {
   logInfo('POST /v1/responses');
-
   try {
     const openaiRequest = req.body;
     const modelId = getRedirectedModelId(openaiRequest.model);
-
-    if (!modelId) {
-      return res.status(400).json({ error: 'model 参数是必需的' });
-    }
-
+    if (!modelId) return res.status(400).json({ error: 'model 参数是必需的' });
     const model = getModelById(modelId);
-    if (!model) {
-      return res.status(404).json({ error: `模型 ${modelId} 未找到` });
-    }
-
-    if (model.type !== 'openai') {
-      return res.status(400).json({
-        error: '端点类型不匹配',
-        message: `/v1/responses 仅支持 openai 类型端点，当前模型 ${modelId} 是 ${model.type} 类型`,
-      });
-    }
-
+    if (!model) return res.status(404).json({ error: `模型 ${modelId} 未找到` });
+    if (model.type !== 'openai') return res.status(400).json({ error: '端点类型不匹配', message: `/v1/responses 仅支持 openai 类型` });
     const endpoint = getEndpointByType(model.type);
-    if (!endpoint) {
-      return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
-    }
-
-    logInfo(`直接转发到 ${model.type} 端点: ${endpoint.base_url}`);
-
-    const authHeader = await resolveAuthHeader(req, res);
-    if (!authHeader) return;
+    if (!endpoint) return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
 
     const clientHeaders = req.headers;
     const provider = getModelProvider(modelId);
-    const headers = getOpenAIHeaders(authHeader, clientHeaders, provider);
-
-    // 注入系统提示词并更新模型ID
     const systemPrompt = getSystemPrompt();
     const modifiedRequest = { ...openaiRequest, model: modelId };
-    if (systemPrompt) {
-      modifiedRequest.instructions = modifiedRequest.instructions
-        ? systemPrompt + modifiedRequest.instructions
-        : systemPrompt;
-    }
-
-    // 处理推理参数
+    if (systemPrompt) { modifiedRequest.instructions = modifiedRequest.instructions ? systemPrompt + modifiedRequest.instructions : systemPrompt; }
     const reasoningLevel = getModelReasoning(modelId);
-    if (reasoningLevel === 'auto') {
-      // auto: 保持原始请求不变
-    } else if (reasoningLevel && ['low', 'medium', 'high', 'xhigh'].includes(reasoningLevel)) {
-      modifiedRequest.reasoning = { effort: reasoningLevel, summary: 'auto' };
-    } else {
-      delete modifiedRequest.reasoning;
-    }
+    if (reasoningLevel === 'auto') { /* keep */ }
+    else if (reasoningLevel && ['low', 'medium', 'high', 'xhigh'].includes(reasoningLevel)) { modifiedRequest.reasoning = { effort: reasoningLevel, summary: 'auto' }; }
+    else { delete modifiedRequest.reasoning; }
 
-    logRequest('POST', endpoint.base_url, headers, modifiedRequest);
+    const response = await proxyWithRetry(req, endpoint.base_url, (auth) => getOpenAIHeaders(auth, clientHeaders, provider), modifiedRequest);
+    if (response.errorText) return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: response.errorText });
+    if (!response.ok) { const t = await response.text(); return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: t }); }
 
-    const response = await proxyFetch(endpoint.base_url, headers, modifiedRequest);
-    logInfo(`响应状态: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logError(`端点错误: ${response.status}`, new Error(errorText));
-      return res.status(response.status).json({
-        error: `端点返回 ${response.status}`,
-        details: errorText,
-      });
-    }
-
-    const isStreaming = openaiRequest.stream === true;
-
-    if (isStreaming) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-
-      try {
-        for await (const chunk of response.body) {
-          res.write(chunk);
-        }
-        res.end();
-        logInfo('流式响应已成功转发');
-      } catch (streamError) {
-        logError('流式传输错误', streamError);
-        res.end();
-      }
-    } else {
-      const data = await response.json();
-      logResponse(200, null, data);
-      res.json(data);
-    }
-  } catch (error) {
-    logError('/v1/responses 处理出错', error);
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
+    if (openaiRequest.stream === true) {
+      res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive');
+      try { for await (const chunk of response.body) { res.write(chunk); } res.end(); } catch (e) { res.end(); }
+    } else { res.json(await response.json()); }
+  } catch (error) { logError('/v1/responses 出错', error); res.status(500).json({ error: 'Internal server error', message: error.message }); }
 }
 
 /**
  * POST /v1/messages - 直接转发到 Anthropic Messages API
- * 仅支持 anthropic 类型端点的模型
  */
 async function handleDirectMessages(req, res) {
   logInfo('POST /v1/messages');
-
   try {
     const anthropicRequest = req.body;
     const modelId = getRedirectedModelId(anthropicRequest.model);
-
-    if (!modelId) {
-      return res.status(400).json({ error: 'model 参数是必需的' });
-    }
-
+    if (!modelId) return res.status(400).json({ error: 'model 参数是必需的' });
     const model = getModelById(modelId);
-    if (!model) {
-      return res.status(404).json({ error: `模型 ${modelId} 未找到` });
-    }
-
-    if (model.type !== 'anthropic') {
-      return res.status(400).json({
-        error: '端点类型不匹配',
-        message: `/v1/messages 仅支持 anthropic 类型端点，当前模型 ${modelId} 是 ${model.type} 类型`,
-      });
-    }
-
+    if (!model) return res.status(404).json({ error: `模型 ${modelId} 未找到` });
+    if (model.type !== 'anthropic') return res.status(400).json({ error: '端点类型不匹配', message: `/v1/messages 仅支持 anthropic 类型` });
     const endpoint = getEndpointByType(model.type);
-    if (!endpoint) {
-      return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
-    }
-
-    logInfo(`直接转发到 ${model.type} 端点: ${endpoint.base_url}`);
-
-    const authHeader = await resolveAuthHeader(req, res);
-    if (!authHeader) return;
+    if (!endpoint) return res.status(500).json({ error: `端点类型 ${model.type} 未配置` });
 
     const clientHeaders = req.headers;
     const provider = getModelProvider(modelId);
     const isStreaming = anthropicRequest.stream === true;
-    const headers = getAnthropicHeaders(authHeader, clientHeaders, isStreaming, modelId, provider);
-
-    // 注入系统提示词并更新模型ID
     const systemPrompt = getSystemPrompt();
     const modifiedRequest = { ...anthropicRequest, model: modelId };
     if (systemPrompt) {
-      if (modifiedRequest.system && Array.isArray(modifiedRequest.system)) {
-        modifiedRequest.system = [
-          { type: 'text', text: systemPrompt },
-          ...modifiedRequest.system,
-        ];
-      } else {
-        modifiedRequest.system = [{ type: 'text', text: systemPrompt }];
-      }
+      if (modifiedRequest.system && Array.isArray(modifiedRequest.system)) { modifiedRequest.system = [{ type: 'text', text: systemPrompt }, ...modifiedRequest.system]; }
+      else { modifiedRequest.system = [{ type: 'text', text: systemPrompt }]; }
     }
-
-    // 处理推理参数 (thinking)
     const reasoningLevel = getModelReasoning(modelId);
-    if (reasoningLevel === 'auto') {
-      // auto: 保持原始请求不变
-    } else if (reasoningLevel && ['low', 'medium', 'high', 'xhigh'].includes(reasoningLevel)) {
-      const budgetTokens = { low: 4096, medium: 12288, high: 24576, xhigh: 40960 };
-      modifiedRequest.thinking = {
-        type: 'enabled',
-        budget_tokens: budgetTokens[reasoningLevel],
-      };
-    } else {
-      delete modifiedRequest.thinking;
-    }
+    if (reasoningLevel === 'auto') { /* keep */ }
+    else if (reasoningLevel && ['low', 'medium', 'high', 'xhigh'].includes(reasoningLevel)) { const bt = { low: 4096, medium: 12288, high: 24576, xhigh: 40960 }; modifiedRequest.thinking = { type: 'enabled', budget_tokens: bt[reasoningLevel] }; }
+    else { delete modifiedRequest.thinking; }
 
-    logRequest('POST', endpoint.base_url, headers, modifiedRequest);
-
-    const response = await proxyFetch(endpoint.base_url, headers, modifiedRequest);
-    logInfo(`响应状态: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logError(`端点错误: ${response.status}`, new Error(errorText));
-      return res.status(response.status).json({
-        error: `端点返回 ${response.status}`,
-        details: errorText,
-      });
-    }
+    const response = await proxyWithRetry(req, endpoint.base_url, (auth) => getAnthropicHeaders(auth, clientHeaders, isStreaming, modelId, provider), modifiedRequest);
+    if (response.errorText) return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: response.errorText });
+    if (!response.ok) { const t = await response.text(); return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: t }); }
 
     if (isStreaming) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-
-      try {
-        for await (const chunk of response.body) {
-          res.write(chunk);
-        }
-        res.end();
-        logInfo('流式响应已成功转发');
-      } catch (streamError) {
-        logError('流式传输错误', streamError);
-        res.end();
-      }
-    } else {
-      const data = await response.json();
-      logResponse(200, null, data);
-      res.json(data);
-    }
-  } catch (error) {
-    logError('/v1/messages 处理出错', error);
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
+      res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive');
+      try { for await (const chunk of response.body) { res.write(chunk); } res.end(); } catch (e) { res.end(); }
+    } else { res.json(await response.json()); }
+  } catch (error) { logError('/v1/messages 出错', error); res.status(500).json({ error: 'Internal server error', message: error.message }); }
 }
 
 /**
- * POST /v1/messages/count_tokens - Anthropic 计算 token 数
+ * POST /v1/messages/count_tokens - Anthropic token 计数
  */
 async function handleCountTokens(req, res) {
   logInfo('POST /v1/messages/count_tokens');
-
   try {
     const anthropicRequest = req.body;
     const modelId = getRedirectedModelId(anthropicRequest.model);
-
-    if (!modelId) {
-      return res.status(400).json({ error: 'model 参数是必需的' });
-    }
-
+    if (!modelId) return res.status(400).json({ error: 'model 参数是必需的' });
     const model = getModelById(modelId);
-    if (!model) {
-      return res.status(404).json({ error: `模型 ${modelId} 未找到` });
-    }
-
-    if (model.type !== 'anthropic') {
-      return res.status(400).json({
-        error: '端点类型不匹配',
-        message: `/v1/messages/count_tokens 仅支持 anthropic 类型端点，当前模型 ${modelId} 是 ${model.type} 类型`,
-      });
-    }
-
+    if (!model) return res.status(404).json({ error: `模型 ${modelId} 未找到` });
+    if (model.type !== 'anthropic') return res.status(400).json({ error: '端点类型不匹配' });
     const endpoint = getEndpointByType('anthropic');
-    if (!endpoint) {
-      return res.status(500).json({ error: '端点类型 anthropic 未配置' });
-    }
-
-    const authHeader = await resolveAuthHeader(req, res);
-    if (!authHeader) return;
+    if (!endpoint) return res.status(500).json({ error: '端点类型 anthropic 未配置' });
 
     const clientHeaders = req.headers;
     const provider = getModelProvider(modelId);
-    const headers = getAnthropicHeaders(authHeader, clientHeaders, false, modelId, provider);
-
-    // 构建 count_tokens 端点 URL
     const countTokensUrl = endpoint.base_url.replace('/v1/messages', '/v1/messages/count_tokens');
     const modifiedRequest = { ...anthropicRequest, model: modelId };
 
-    logInfo(`转发到 count_tokens 端点: ${countTokensUrl}`);
-    logRequest('POST', countTokensUrl, headers, modifiedRequest);
+    const response = await proxyWithRetry(req, countTokensUrl, (auth) => getAnthropicHeaders(auth, clientHeaders, false, modelId, provider), modifiedRequest);
+    if (response.errorText) return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: response.errorText });
+    if (!response.ok) { const t = await response.text(); return res.status(response.status).json({ error: `端点返回 ${response.status}`, details: t }); }
 
-    const response = await proxyFetch(countTokensUrl, headers, modifiedRequest);
-    logInfo(`响应状态: ${response.status}`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      logError(`count_tokens 错误: ${response.status}`, new Error(errorText));
-      return res.status(response.status).json({
-        error: `端点返回 ${response.status}`,
-        details: errorText,
-      });
-    }
-
-    const data = await response.json();
-    logResponse(200, null, data);
-    res.json(data);
-  } catch (error) {
-    logError('/v1/messages/count_tokens 处理出错', error);
-    res.status(500).json({ error: 'Internal server error', message: error.message });
-  }
+    res.json(await response.json());
+  } catch (error) { logError('/v1/messages/count_tokens 出错', error); res.status(500).json({ error: 'Internal server error', message: error.message }); }
 }
 
 // ======================== 注册路由 ========================
@@ -641,46 +456,42 @@ router.post('/v1/messages/count_tokens', handleCountTokens);
 
 // ======================== 认证管理 API ========================
 
-/**
- * GET /api/auth/status - 查看认证状态
- */
-router.get('/api/auth/status', (req, res) => {
-  res.json(getAuthStatus());
-});
+router.get('/api/auth/status', (req, res) => { res.json(getAuthStatus()); });
 
-/**
- * POST /api/auth/keys - 添加刷新令牌
- * 请求体: { "key": "refresh_token_value" }
- * 提交后立即刷新验证，成功后自动保存到 data/auth.json
- */
 router.post('/api/auth/keys', async (req, res) => {
   const { key } = req.body || {};
-
-  if (!key || typeof key !== 'string' || key.trim() === '') {
-    return res.status(400).json({ error: '请提供 key 字段（刷新令牌）' });
-  }
-
-  try {
-    const result = await addRefreshKey(key);
-    res.json(result);
-  } catch (error) {
-    logError('添加刷新令牌失败', error);
-    res.status(400).json({ error: '令牌验证失败', message: error.message });
-  }
+  if (!key || typeof key !== 'string' || key.trim() === '') return res.status(400).json({ error: '请提供 key 字段' });
+  try { res.json(await addRefreshKey(key)); }
+  catch (error) { logError('添加令牌失败', error); res.status(400).json({ error: '令牌验证失败', message: error.message }); }
 });
 
-/**
- * DELETE /api/auth/keys/:index - 删除指定账户
- */
 router.delete('/api/auth/keys/:index', (req, res) => {
   const index = parseInt(req.params.index, 10);
+  if (isNaN(index)) return res.status(400).json({ error: '无效的索引' });
+  res.json(removeRefreshKey(index));
+});
 
-  if (isNaN(index)) {
-    return res.status(400).json({ error: '无效的索引' });
-  }
+router.post('/api/auth/keys/:index/unlock', (req, res) => {
+  const index = parseInt(req.params.index, 10);
+  if (isNaN(index)) return res.status(400).json({ error: '无效的索引' });
+  res.json(unlockAccount(index));
+});
 
-  const result = removeRefreshKey(index);
-  res.status(result.success ? 200 : 400).json(result);
+// ======================== 配置管理 API ========================
+
+router.get('/api/config', (req, res) => {
+  try { res.type('text/yaml').send(fs.readFileSync(CONFIG_PATH, 'utf-8')); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.put('/api/config', (req, res) => {
+  try {
+    const { content } = req.body || {};
+    if (!content) return res.status(400).json({ error: '请提供 content 字段' });
+    fs.writeFileSync(CONFIG_PATH, content, 'utf-8');
+    // 热加载会自动触发
+    res.json({ success: true, message: '配置已保存（热加载将自动生效）' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 export default router;

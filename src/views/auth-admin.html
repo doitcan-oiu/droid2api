@@ -3,145 +3,207 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>droid2api 令牌管理</title>
+  <title>droid2api 管理面板</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-active { border-color: #3b82f6; color: #3b82f6; }
+    .tab-inactive { border-color: transparent; color: #9ca3af; }
+    .toast { animation: fadeInOut 3s ease-in-out forwards; }
+    @keyframes fadeInOut { 0%{opacity:0;transform:translateY(-10px)} 10%{opacity:1;transform:translateY(0)} 80%{opacity:1} 100%{opacity:0} }
+  </style>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
-  <div class="max-w-2xl mx-auto px-4 py-8">
+<body class="bg-gray-950 text-gray-100 min-h-screen">
 
-    <h1 class="text-2xl font-bold mb-1">droid2api 令牌管理</h1>
-    <p class="text-gray-400 text-sm mb-6">认证模式: <span id="mode" class="text-blue-400 font-mono">-</span></p>
+<!-- Toast -->
+<div id="toast" class="fixed top-4 right-4 z-50 hidden">
+  <div class="px-4 py-2 rounded-lg text-sm font-medium shadow-lg"></div>
+</div>
 
+<div class="max-w-3xl mx-auto px-4 py-6">
+  <!-- 头部 -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-xl font-bold">droid2api</h1>
+      <p class="text-gray-500 text-xs mt-0.5">认证模式: <span id="mode" class="text-blue-400 font-mono">-</span></p>
+    </div>
+    <span class="text-xs text-gray-600">v2.0</span>
+  </div>
+
+  <!-- 标签页 -->
+  <div class="flex border-b border-gray-800 mb-5">
+    <button onclick="switchTab('accounts')" id="tab-accounts" class="px-4 py-2 text-sm font-medium border-b-2 tab-active">账户管理</button>
+    <button onclick="switchTab('config')" id="tab-config" class="px-4 py-2 text-sm font-medium border-b-2 tab-inactive ml-1">系统配置</button>
+  </div>
+
+  <!-- ==================== 账户管理 ==================== -->
+  <div id="panel-accounts">
     <!-- 添加令牌 -->
-    <div class="bg-gray-800 rounded-lg p-4 mb-6">
-      <h2 class="text-lg font-semibold mb-3">添加刷新令牌</h2>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-4">
+      <h2 class="text-sm font-semibold text-gray-300 mb-2">添加刷新令牌</h2>
       <div class="flex gap-2">
-        <input id="keyInput" type="text" placeholder="输入 refresh token"
-          class="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+        <input id="keyInput" type="text" placeholder="粘贴 refresh token"
+          class="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 placeholder-gray-600"
+          onkeydown="if(event.key==='Enter')addKey()">
         <button onclick="addKey()" id="addBtn"
-          class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm font-medium whitespace-nowrap">
+          class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 rounded text-sm font-medium whitespace-nowrap transition">
           添加
         </button>
       </div>
-      <p id="addMsg" class="text-sm mt-2 hidden"></p>
+      <p id="addMsg" class="text-xs mt-2 hidden"></p>
     </div>
 
     <!-- 账户列表 -->
-    <div class="bg-gray-800 rounded-lg p-4">
-      <div class="flex justify-between items-center mb-3">
-        <h2 class="text-lg font-semibold">账户列表</h2>
-        <button onclick="loadStatus()" class="text-gray-400 hover:text-white text-sm">刷新</button>
+    <div class="bg-gray-900 border border-gray-800 rounded-lg">
+      <div class="flex justify-between items-center px-4 py-3 border-b border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-300">账户列表</h2>
+        <button onclick="loadStatus()" class="text-gray-500 hover:text-gray-300 text-xs transition">刷新</button>
       </div>
-      <div id="accountList"></div>
-      <p id="emptyTip" class="text-gray-500 text-sm text-center py-6 hidden">暂无账户</p>
+      <div id="accountList" class="divide-y divide-gray-800"></div>
+      <p id="emptyTip" class="text-gray-600 text-sm text-center py-8 hidden">暂无账户，请添加刷新令牌</p>
     </div>
-
   </div>
+
+  <!-- ==================== 系统配置 ==================== -->
+  <div id="panel-config" class="hidden">
+    <div class="bg-gray-900 border border-gray-800 rounded-lg">
+      <div class="flex justify-between items-center px-4 py-3 border-b border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-300">config/app.yaml</h2>
+        <div class="flex gap-2">
+          <button onclick="loadConfig()" class="text-gray-500 hover:text-gray-300 text-xs transition">重新加载</button>
+          <button onclick="saveConfig()" id="saveBtn"
+            class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3 py-1 rounded text-xs font-medium transition">
+            保存
+          </button>
+        </div>
+      </div>
+      <textarea id="configEditor"
+        class="w-full bg-gray-950 text-gray-200 text-sm font-mono p-4 focus:outline-none resize-none leading-relaxed"
+        rows="28" spellcheck="false" placeholder="加载中..."></textarea>
+    </div>
+    <p class="text-gray-600 text-xs mt-2">保存后自动热加载生效，无需重启服务</p>
+  </div>
+</div>
 
 <script>
 const API = window.location.origin;
 
+// ==================== 标签页切换 ====================
+function switchTab(tab) {
+  document.getElementById('panel-accounts').classList.toggle('hidden', tab !== 'accounts');
+  document.getElementById('panel-config').classList.toggle('hidden', tab !== 'config');
+  document.getElementById('tab-accounts').className = `px-4 py-2 text-sm font-medium border-b-2 ${tab === 'accounts' ? 'tab-active' : 'tab-inactive'}`;
+  document.getElementById('tab-config').className = `px-4 py-2 text-sm font-medium border-b-2 ml-1 ${tab === 'config' ? 'tab-active' : 'tab-inactive'}`;
+  if (tab === 'config') loadConfig();
+}
+
+// ==================== Toast ====================
+function showToast(msg, ok = true) {
+  const t = document.getElementById('toast');
+  const inner = t.firstElementChild;
+  inner.textContent = msg;
+  inner.className = `px-4 py-2 rounded-lg text-sm font-medium shadow-lg toast ${ok ? 'bg-green-800 text-green-200' : 'bg-red-900 text-red-200'}`;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 3000);
+}
+
+// ==================== 账户管理 ====================
 async function loadStatus() {
   try {
     const res = await fetch(`${API}/api/auth/status`);
     const data = await res.json();
 
-    document.getElementById('mode').textContent = {
-      factory_key: '固定密钥',
-      refresh: '刷新令牌',
-      client: '客户端授权'
-    }[data.mode] || data.mode;
+    document.getElementById('mode').textContent = { factory_key: '固定密钥', refresh: '刷新令牌', client: '客户端授权' }[data.mode] || data.mode;
 
     const list = document.getElementById('accountList');
     const empty = document.getElementById('emptyTip');
 
-    if (data.accounts.length === 0) {
-      list.innerHTML = '';
-      empty.classList.remove('hidden');
-      return;
-    }
-
+    if (data.accounts.length === 0) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
     empty.classList.add('hidden');
-    list.innerHTML = data.accounts.map(a => `
-      <div class="flex items-center justify-between py-3 border-b border-gray-700 last:border-0">
+
+    list.innerHTML = data.accounts.map(a => {
+      let statusBadge, statusColor;
+      if (a.locked) {
+        statusBadge = '已锁定'; statusColor = 'bg-red-900 text-red-300';
+      } else if (!a.has_access_token) {
+        statusBadge = '不可用'; statusColor = 'bg-yellow-900 text-yellow-300';
+      } else if (a.needs_refresh) {
+        statusBadge = '待刷新'; statusColor = 'bg-yellow-900 text-yellow-300';
+      } else {
+        statusBadge = '正常'; statusColor = 'bg-green-900 text-green-300';
+      }
+
+      return `
+      <div class="flex items-center justify-between px-4 py-3">
         <div class="min-w-0 flex-1">
-          <div class="font-medium text-sm truncate">${esc(a.label)}</div>
-          <div class="text-xs text-gray-400 mt-0.5">
-            <span class="inline-block w-2 h-2 rounded-full mr-1 ${a.has_access_token ? 'bg-green-500' : 'bg-red-500'}"></span>
-            ${a.has_access_token ? '可用' : '不可用'}
-            ${a.last_refresh ? ' · 刷新于 ' + formatTime(a.last_refresh) : ''}
-            ${a.needs_refresh ? ' · <span class="text-yellow-400">待刷新</span>' : ''}
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-medium truncate">${esc(a.label)}</span>
+            <span class="text-xs px-1.5 py-0.5 rounded ${statusColor}">${statusBadge}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-1">
+            ${a.last_refresh ? '刷新: ' + fmtTime(a.last_refresh) : '未刷新'}
+            ${a.locked ? ' · 原因: ' + esc(a.lock_reason || '-') : ''}
           </div>
         </div>
-        <button onclick="removeKey(${a.index})"
-          class="ml-3 text-red-400 hover:text-red-300 text-sm shrink-0">删除</button>
-      </div>
-    `).join('');
-  } catch (e) {
-    console.error(e);
-  }
+        <div class="flex gap-2 ml-3 shrink-0">
+          ${a.locked ? `<button onclick="unlockKey(${a.index})" class="text-xs text-blue-400 hover:text-blue-300 transition">解锁</button>` : ''}
+          <button onclick="removeKey(${a.index})" class="text-xs text-red-400 hover:text-red-300 transition">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) { console.error(e); }
 }
 
 async function addKey() {
   const input = document.getElementById('keyInput');
   const btn = document.getElementById('addBtn');
-  const msg = document.getElementById('addMsg');
   const key = input.value.trim();
   if (!key) return;
 
-  btn.disabled = true;
-  btn.textContent = '验证中...';
-  msg.classList.add('hidden');
-
+  btn.disabled = true; btn.textContent = '验证中...';
   try {
-    const res = await fetch(`${API}/api/auth/keys`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key })
-    });
+    const res = await fetch(`${API}/api/auth/keys`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
     const data = await res.json();
-
-    msg.classList.remove('hidden');
-    if (res.ok) {
-      msg.className = 'text-sm mt-2 text-green-400';
-      msg.textContent = data.message || '添加成功';
-      input.value = '';
-      loadStatus();
-    } else {
-      msg.className = 'text-sm mt-2 text-red-400';
-      msg.textContent = data.message || data.error || '添加失败';
-    }
-  } catch (e) {
-    msg.classList.remove('hidden');
-    msg.className = 'text-sm mt-2 text-red-400';
-    msg.textContent = '网络错误';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '添加';
-  }
+    if (res.ok) { showToast(data.message || '添加成功'); input.value = ''; loadStatus(); }
+    else { showToast(data.message || data.error || '添加失败', false); }
+  } catch (e) { showToast('网络错误', false); }
+  finally { btn.disabled = false; btn.textContent = '添加'; }
 }
 
-async function removeKey(index) {
+async function removeKey(i) {
   if (!confirm('确定删除该账户？')) return;
+  try { const r = await fetch(`${API}/api/auth/keys/${i}`, { method: 'DELETE' }); const d = await r.json(); showToast(d.message); loadStatus(); }
+  catch (e) { showToast('操作失败', false); }
+}
+
+async function unlockKey(i) {
+  try { const r = await fetch(`${API}/api/auth/keys/${i}/unlock`, { method: 'POST' }); const d = await r.json(); showToast(d.message); loadStatus(); }
+  catch (e) { showToast('操作失败', false); }
+}
+
+// ==================== 配置管理 ====================
+async function loadConfig() {
   try {
-    await fetch(`${API}/api/auth/keys/${index}`, { method: 'DELETE' });
-    loadStatus();
-  } catch (e) {
-    console.error(e);
-  }
+    const res = await fetch(`${API}/api/config`);
+    document.getElementById('configEditor').value = await res.text();
+  } catch (e) { showToast('加载配置失败', false); }
 }
 
-function formatTime(iso) {
-  const d = new Date(iso);
-  const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+async function saveConfig() {
+  const btn = document.getElementById('saveBtn');
+  const content = document.getElementById('configEditor').value;
+  btn.disabled = true; btn.textContent = '保存中...';
+  try {
+    const res = await fetch(`${API}/api/config`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) });
+    const data = await res.json();
+    if (res.ok) showToast(data.message || '已保存');
+    else showToast(data.error || '保存失败', false);
+  } catch (e) { showToast('网络错误', false); }
+  finally { btn.disabled = false; btn.textContent = '保存'; }
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
+// ==================== 工具函数 ====================
+function fmtTime(iso) { const d = new Date(iso); const p = n => String(n).padStart(2, '0'); return `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 loadStatus();
 setInterval(loadStatus, 30000);

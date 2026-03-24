@@ -191,6 +191,18 @@ export function getModelFast(modelId) {
 }
 
 /**
+ * 获取重试与锁定配置
+ * @returns {object} { maxRetries: number, lockStatusCodes: number[] }
+ */
+export function getRetryConfig() {
+  const cfg = getConfig();
+  return {
+    maxRetries: cfg.retry?.max_retries ?? 3,
+    lockStatusCodes: Array.isArray(cfg.lock_status_codes) ? cfg.lock_status_codes : [402],
+  };
+}
+
+/**
  * 获取当前 User-Agent 字符串
  * @returns {string}
  */
@@ -252,5 +264,5 @@ export function getAuthConfig() {
   return { factory_api_keys };
 }
 
-/** 导出项目根目录供其他模块使用 */
-export { ROOT_DIR };
+/** 导出项目根目录和配置路径供其他模块使用 */
+export { ROOT_DIR, CONFIG_PATH };
